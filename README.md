@@ -37,7 +37,7 @@ This repo just glues them together so both UIs share one port, one auth token, a
 | Secret | What it is | How to get it |
 | --- | --- | --- |
 | `GATEWAY_TOKEN` | Your password — gates the WebUI login and the `/v1/*` API. Pick anything strong. | Anything u want to keep as a password for your chat and dashboard |
-| `HF_TOKEN` | Persists your sessions, profiles, skills, cron jobs, memory, and workspace files across Space restarts by syncing to a private HF Dataset every 10 min. **Without this, restarts wipe everything.** | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → New token → **Write** scope |
+| `HF_TOKEN` | Persists your sessions, profiles, skills, cron jobs, memory, and workspace files across Space restarts by syncing to a private HF Dataset every 10 min. **Without this, restarts wipe everything.** | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) → Create New token → **Write** scope |
 | `CLOUDFLARE_WORKERS_TOKEN` | Auto-provisions two Cloudflare Workers: one as an outbound proxy (needed for Telegram, sometimes for blocked LLM providers) and one as a cron keep-alive worker that pings `/health` every 10 min so the Space doesn't sleep on free tier | Go to https://dash.cloudflare.com/profile/api-tokens → Create new token → Edit Cloudflare Workers (Use this template)|
 **Optional advanced features**:
 

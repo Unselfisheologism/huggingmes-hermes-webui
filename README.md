@@ -53,7 +53,7 @@ This repo just glues them together so both UIs share one port, one auth token, a
 
 ### 3. Restart and open
 
-Settings → **Restart this Space** (or **Factory reboot** if you changed the Dockerfile). Wait ~5–8 minutes for the first build. Watch the **Logs** tab — when you see this, you're ready:
+hugging face Settings → **Restart this Space** (or **Factory reboot** if you changed the Dockerfile). Wait ~5–8 minutes for the first build. Watch the **Logs** tab — when you see this, you're ready:
 
 ```
 HuggingMes + Hermes WebUI router listening on 0.0.0.0:7861

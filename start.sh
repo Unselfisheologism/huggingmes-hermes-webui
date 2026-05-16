@@ -19,7 +19,7 @@ DASHBOARD_PORT="${DASHBOARD_PORT:-9119}"
 TELEGRAM_WEBHOOK_PORT="${TELEGRAM_WEBHOOK_PORT:-8765}"
 WEBUI_PORT="${HERMES_WEBUI_PORT:-8787}"
 
-SYNC_INTERVAL="${SYNC_INTERVAL:-600}"
+SYNC_INTERVAL="${SYNC_INTERVAL:-60}"
 BACKUP_DATASET="${BACKUP_DATASET_NAME:-huggingmes-backup}"
 CF_PROXY_ENV_FILE="/tmp/huggingmes-cloudflare-proxy.env"
 
@@ -324,7 +324,7 @@ else
   echo "Telegram   : not configured"
 fi
 if [ -n "${HF_TOKEN:-}" ]; then
-  echo "Backup     : ${BACKUP_DATASET} (every ${SYNC_INTERVAL:-600}s)"
+  echo "Backup     : ${BACKUP_DATASET} (poll ${SYNC_POLL_INTERVAL:-2}s, debounce ${SYNC_DEBOUNCE_SECONDS:-3}s, max ${SYNC_INTERVAL:-60}s)"
 else
   echo "Backup     : disabled"
 fi

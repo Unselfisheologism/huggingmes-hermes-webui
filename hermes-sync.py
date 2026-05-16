@@ -12,7 +12,6 @@ import logging
 import os
 import shutil
 import signal
-import random
 import socket
 import sys
 import tempfile
@@ -33,8 +32,15 @@ logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", "/opt/data"))
 STATUS_FILE = Path("/tmp/huggingmes-sync-status.json")
 STATE_FILE = HERMES_HOME / ".huggingmes-sync-state.json"
-INTERVAL = int(os.environ.get("SYNC_INTERVAL", "600"))
-INITIAL_DELAY = int(os.environ.get("SYNC_START_DELAY", "10"))
+INTERVAL = int(os.environ.get("SYNC_INTERVAL", "60"))
+INITIAL_DELAY = int(os.environ.get("SYNC_START_DELAY", "5"))
+# Change-driven settings: the loop polls cheap stat metadata every POLL_INTERVAL
+# seconds, and once a change is observed waits DEBOUNCE_SECONDS of quiet before
+# uploading. INTERVAL acts only as a hard ceiling — even if writes never settle,
+# a sync is forced after INTERVAL seconds. This keeps the worst-case data loss
+# window well under a minute without uploading on every keystroke.
+POLL_INTERVAL = float(os.environ.get("SYNC_POLL_INTERVAL", "2"))
+DEBOUNCE_SECONDS = float(os.environ.get("SYNC_DEBOUNCE_SECONDS", "3"))
 HF_TOKEN = os.environ.get("HF_TOKEN", "").strip()
 HF_USERNAME = os.environ.get("HF_USERNAME", "").strip()
 SPACE_AUTHOR_NAME = os.environ.get("SPACE_AUTHOR_NAME", "").strip()
@@ -295,26 +301,95 @@ def loop() -> int:
     signal.signal(signal.SIGINT, handle_signal)
     try:
         repo_id = resolve_backup_repo()
-        write_status("configured", f"Backup loop active for {repo_id} with {INTERVAL}s interval.")
+        write_status(
+            "configured",
+            f"Backup watcher active for {repo_id} "
+            f"(poll={POLL_INTERVAL}s, debounce={DEBOUNCE_SECONDS}s, max={INTERVAL}s).",
+        )
     except Exception as exc:
         write_status("error", str(exc))
         print(f"Hermes sync error: {exc}")
         return 1
 
-    last_fingerprint = fingerprint_dir(HERMES_HOME)
-    last_marker = metadata_marker(HERMES_HOME)
-    time.sleep(INITIAL_DELAY)
-    print(f"Hermes state sync started: every {INTERVAL}s -> {repo_id}")
+    # Seed from any prior run so we don't re-upload an identical tree.
+    last_fingerprint: str | None = None
+    last_marker: tuple[int, int, int] | None = None
+    if STATE_FILE.exists():
+        try:
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            last_fingerprint = state.get("last_fingerprint")
+            m = state.get("last_marker")
+            if m and len(m) == 3:
+                last_marker = tuple(m)
+        except Exception:
+            pass
+    if last_marker is None:
+        last_marker = metadata_marker(HERMES_HOME)
+
+    if STOP_EVENT.wait(INITIAL_DELAY):
+        return 0
+    print(
+        f"Hermes state sync started: poll={POLL_INTERVAL}s "
+        f"debounce={DEBOUNCE_SECONDS}s max={INTERVAL}s -> {repo_id}"
+    )
+
+    # Change-driven scheduler. Two clocks:
+    #   * `pending_since`     — when we first noticed an unsynced change. Used
+    #                           with INTERVAL to enforce a hard ceiling so a
+    #                           continuously-busy session can't starve uploads.
+    #   * `last_change_at`    — when we most recently saw the marker move. The
+    #                           debounce timer is measured against this so we
+    #                           wait for writes to settle before uploading.
+    pending_since: float | None = None
+    last_change_at: float | None = None
+    candidate_marker = last_marker
 
     while not STOP_EVENT.is_set():
+        if STOP_EVENT.wait(POLL_INTERVAL):
+            break
+
+        try:
+            current_marker = metadata_marker(HERMES_HOME)
+        except Exception as exc:
+            # Don't let a transient stat error kill the loop.
+            write_status("error", f"marker scan failed: {exc}")
+            continue
+
+        now = time.time()
+
+        if current_marker != candidate_marker:
+            # Files moved since the last poll. Start (or extend) a debounce.
+            if pending_since is None:
+                pending_since = now
+            last_change_at = now
+            candidate_marker = current_marker
+            continue
+
+        if pending_since is None:
+            # Tree is unchanged and there's nothing waiting. Nothing to do.
+            continue
+
+        quiet_for = now - (last_change_at or now)
+        held_for = now - pending_since
+        # Trigger when writes have settled (debounce) OR when the hard ceiling
+        # is hit, so a never-idle tree still gets snapshotted at least once
+        # per INTERVAL seconds.
+        if quiet_for < DEBOUNCE_SECONDS and held_for < INTERVAL:
+            continue
+
         try:
             last_fingerprint, last_marker = sync_once(last_fingerprint, last_marker)
+            candidate_marker = last_marker
         except Exception as exc:
             write_status("error", f"Sync failed: {exc}")
             print(f"Hermes sync failed: {exc}")
-        jitter = random.uniform(0.9, 1.1)
-        if STOP_EVENT.wait(INTERVAL * jitter):
-            break
+            # Back off briefly on failure so we don't hot-loop a broken upload.
+            if STOP_EVENT.wait(min(5.0, POLL_INTERVAL * 2)):
+                break
+        finally:
+            pending_since = None
+            last_change_at = None
+
     return 0
 
 

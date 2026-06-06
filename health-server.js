@@ -295,10 +295,12 @@ function proxyRequest(
 ) {
   const parsed = new URL(req.url, "http://localhost");
   const targetPath = rewritePath(parsed.pathname) + parsed.search;
+  const localOrigin = `http://${GATEWAY_HOST}:${targetPort}`;
   const headers = {
     ...req.headers,
     ...headerOverrides,
     host: `${GATEWAY_HOST}:${targetPort}`,
+    origin: localOrigin,
     "x-forwarded-host": req.headers.host || "",
     "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
   };
@@ -418,6 +420,7 @@ function proxyDashboard(req, res) {
   const headers = {
     ...req.headers,
     host: `${GATEWAY_HOST}:${DASHBOARD_PORT}`,
+    origin: `http://${GATEWAY_HOST}:${DASHBOARD_PORT}`,
     "x-forwarded-host": req.headers.host || "",
     "x-forwarded-proto": req.headers["x-forwarded-proto"] || "https",
     // Disable upstream compression so we can rewrite text responses.

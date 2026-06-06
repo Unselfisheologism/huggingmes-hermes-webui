@@ -978,6 +978,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // /hm/debug/model-options-trace — runs the Python debug script that
+  // calls build_models_payload() directly with full traceback output.
+  if (path === `${HM_PREFIX}/debug/model-options-trace`) {
+    if (!requireAuth(req, res)) return;
+    const { execFile } = require("child_process");
+    const script = `${process.env.HUGGINGMES_APP_DIR || "/opt/huggingmes"}/debug-model-options.py`;
+    execFile("/opt/hermes/.venv/bin/python", [script], { timeout: 30000 }, (err, stdout, stderr) => {
+      res.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+      res.end(`--- stdout ---\n${stdout}\n--- stderr ---\n${stderr}\n--- exit ---\n${err ? err.message : "0"}`);
+    });
+    return;
+  }
+
   // Legacy /dashboard -> /hm
   if (path === "/dashboard" || path === "/dashboard/") {
     redirect(res, `${HM_PREFIX}${parsed.search}`);

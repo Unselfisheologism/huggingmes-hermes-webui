@@ -388,6 +388,177 @@ function redirect(res, location, statusCode = 302) {
   res.end();
 }
 
+
+/* ── Multi-user auth helpers (parent accounts) ───────────────────── */
+const MU_DB = (process.env.HERMES_HOME || '/opt/data') + '/state/multiuser.json';
+const MU_SESSION_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
+
+function muLoad() {
+  try {
+    if (fs.existsSync(MU_DB))
+      return JSON.parse(fs.readFileSync(MU_DB, 'utf8'));
+  } catch {}
+  return { users: [], sessions: {} };
+}
+
+function muSave(d) {
+  try {
+    const dir = require('path').dirname(MU_DB);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(MU_DB, JSON.stringify(d, null, 2), 'utf8');
+  } catch (e) { console.error('mu-db:', e.message); }
+}
+
+async function readJSON(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
+      catch { reject(new Error('Invalid JSON')); }
+    });
+    req.on('error', reject);
+  });
+}
+
+function muGet(tok) {
+  if (!tok) return null;
+  const db = muLoad();
+  const sid = db.sessions[tok];
+  if (!sid) return null;
+  const user = db.users.find(u => u.id === sid);
+  if (!user) return null;
+  const now = Date.now() / 1000;
+  if (now > user.sessionExpiresAt) {
+    delete db.sessions[tok];
+    muSave(db);
+    return null;
+  }
+  return user;
+}
+
+function muCreate(email, password, display_name) {
+  const db = muLoad();
+  if (db.users.find(u => u.email === email)) return null;
+  const crypto = require('crypto');
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  const user = {
+    id: 'u_' + crypto.randomBytes(12).toString('hex'),
+    email,
+    password: salt + ':' + hash,
+    display_name: display_name || email.split('@')[0],
+    created_at: new Date().toISOString(),
+    sessionExpiresAt: 0,
+  };
+  db.users.push(user);
+  muSave(db);
+  const { password: _, ...safe } = user;
+  return safe;
+}
+
+function muVerify(email, password) {
+  const db = muLoad();
+  const user = db.users.find(u => u.email === email);
+  if (!user) return null;
+  const [salt, storedHash] = user.password.split(':');
+  const hash = require('crypto').scryptSync(password || '', salt, 64).toString('hex');
+  if (hash !== storedHash) return null;
+  const { password: _, ...safe } = user;
+  return safe;
+}
+
+function muSession(userId) {
+  const db = muLoad();
+  const token = require('crypto').randomBytes(24).toString('hex');
+  db.sessions[token] = userId;
+  const user = db.users.find(u => u.id === userId);
+  if (user) user.sessionExpiresAt = (Date.now() / 1000) + MU_SESSION_TTL;
+  muSave(db);
+  return token;
+}
+
+function muDel(tok) {
+  if (!tok) return;
+  const db = muLoad();
+  delete db.sessions[tok];
+  muSave(db);
+}
+
+// ── Signin/signup HTML page ──────────────────────────────────────── */
+const MU_LOGIN_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Tutor — Sign In</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.card{background:#fff;border-radius:16px;padding:40px;width:100%;max-width:420px;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+.card h1{font-size:24px;margin-bottom:8px;color:#1a1a2e}
+.card p{color:#666;font-size:14px;margin-bottom:24px}
+.tabs{display:flex;gap:0;margin-bottom:24px;border-radius:8px;overflow:hidden;border:1px solid #e0e0e0}
+.tab{flex:1;padding:10px;text-align:center;cursor:pointer;font-size:14px;font-weight:500;background:#f5f5f5;color:#666;border:none;transition:all .2s}
+.tab.active{background:#302b63;color:#fff}
+.form{display:none}
+.form.active{display:block}
+.form label{display:block;font-size:13px;font-weight:600;color:#333;margin-bottom:6px}
+.form input{width:100%;padding:12px 14px;border:2px solid #e0e0e0;border-radius:8px;font-size:15px;transition:border .2s;margin-bottom:16px}
+.form input:focus{outline:none;border-color:#302b63}
+.form button{width:100%;padding:12px;background:linear-gradient(135deg,#302b63,#24243e);color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;transition:opacity .2s}
+.form button:hover{opacity:.9}
+.form button:disabled{opacity:.5;cursor:not-allowed}
+.error{color:#d32f2f;font-size:13px;margin-top:-10px;margin-bottom:12px;display:none}
+.success{color:#2e7d32;font-size:13px;margin-top:8px;text-align:center;display:none}
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#d32f2f;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;z-index:1000;display:none;animation:fadeIn .3s}
+@keyframes fadeIn{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
+.otp-note{text-align:center;font-size:12px;color:#999;margin-top:12px;line-height:1.4}
+</style>
+</head>
+<body>
+<div class="toast" id="toast"></div>
+<div class="card">
+<h1>AI Tutor</h1>
+<p>Your personal AI learning assistant</p>
+<div class="tabs">
+<button class="tab active" onclick="switchTab('signin')" id="tab-signin">Sign In</button>
+<button class="tab" onclick="switchTab('signup')" id="tab-signup">Sign Up</button>
+</div>
+<div class="form active" id="form-signin">
+<form onsubmit="return doLogin(event)">
+<label for="email">Email</label>
+<input type="email" id="login-email" placeholder="your@email.com" required>
+<label for="password">Password</label>
+<input type="password" id="login-pass" placeholder="Enter password" required>
+<button type="submit" id="login-btn">Sign In</button>
+<div class="error" id="login-error"></div>
+</form>
+</div>
+<div class="form" id="form-signup">
+<form onsubmit="return doSignup(event)">
+<label for="name">Your Name</label>
+<input type="text" id="signup-name" placeholder="Parent's name">
+<label for="email">Email</label>
+<input type="email" id="signup-email" placeholder="your@email.com" required>
+<label for="password">Password (min 6 characters)</label>
+<input type="password" id="signup-pass" placeholder="Create a password" required>
+<button type="submit" id="signup-btn">Create Account</button>
+<div class="error" id="signup-error"></div>
+<div class="success" id="signup-success">Account created! Redirecting...</div>
+</form>
+</div>
+<div class="otp-note">Your data is private and secure.</div>
+</div>
+<script>
+function switchTab(t){document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.querySelectorAll('.form').forEach(f=>f.classList.remove('active'));document.getElementById('form-'+t).classList.add('active');document.querySelectorAll('.error').forEach(e=>e.style.display='none')}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',4000)}
+async function doLogin(e){e.preventDefault();const btn=document.getElementById('login-btn');btn.disabled=true;btn.textContent='Signing in...';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('login-email').value,password:document.getElementById('login-pass').value})});const d=await r.json();if(r.ok){window.location.href='/'}else{document.getElementById('login-error').textContent=d.error;document.getElementById('login-error').style.display='block'}}catch(e){toast('Network error. Please try again.')}finally{btn.disabled=false;btn.textContent='Sign In'}}
+async function doSignup(e){e.preventDefault();const btn=document.getElementById('signup-btn');btn.disabled=true;btn.textContent='Creating...';try{const r=await fetch('/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('signup-email').value,password:document.getElementById('signup-pass').value,display_name:document.getElementById('signup-name').value})});const d=await r.json();if(r.ok){document.getElementById('signup-success').style.display='block';document.getElementById('signup-error').style.display='none';setTimeout(()=>window.location.href='/',1000)}else{document.getElementById('signup-error').textContent=d.error;document.getElementById('signup-error').style.display='block'}}catch(e){toast('Network error. Please try again.')}finally{btn.disabled=false;btn.textContent='Create Account'}}
+</script>
+</body>
+</html>`;
+
 /* ── Dashboard SPA proxy with HTML rewriting ──────────────────────────
  *
  * The Hermes dashboard is a Vite React app built for root-path deployment.

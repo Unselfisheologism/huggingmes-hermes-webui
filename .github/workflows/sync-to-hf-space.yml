@@ -42,7 +42,7 @@ jobs:
           # squash-merge, or include changes the Space repo doesn't have.
           # If you ever edit files via the HF web UI, those edits will be
           # overwritten on the next mirror — treat GitHub as the source of truth.
-          git remote add space "https://F4bC0d3:${HF_TOKEN}@huggingface.co/spaces/f4b404/hermes"
+          git remote add space "https://UnselfishNeologism:${HF_TOKEN}@huggingface.co/spaces/UnselfishNeologism/ai-tutor"
 
       - name: Push main branch to the HF Space
         run: |
@@ -51,5 +51,5 @@ jobs:
       - name: Report
         if: always()
         run: |
-          echo "Mirrored $(git rev-parse --short HEAD) → https://huggingface.co/spaces/f4b404/hermes"
+          echo "Mirrored $(git rev-parse --short HEAD) → https://huggingface.co/spaces/UnselfishNeologism/ai-tutor"
           echo "The Space will start rebuilding within a few seconds."

@@ -1134,10 +1134,100 @@ except Exception:
     return;
   }
 
-  // Catch-all -> WebUI. Don't gate at the router level: WebUI has its own
-  // password login. GATEWAY_TOKEN *is* the WebUI password (start.sh sets
-  // HERMES_WEBUI_PASSWORD=$GATEWAY_TOKEN).
+  // ── Multi-user auth routes (parent accounts) ──────────────────────
+  // GET /signin → login/signup page
+  if (path === "/signin") {
+    if (req.method === "GET") {
+      const token = parseCookies(req)["mu_session"];
+      if (token && muGet(token)) { redirect(res, "/"); return; }
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(MU_LOGIN_HTML);
+      return;
+    }
+    res.writeHead(405, { allow: "GET" });
+    res.end("Method not allowed");
+    return;
+  }
+
+  // POST /api/signup
+  if (path === "/api/signup" && req.method === "POST") {
+    try {
+      const data = await readJSON(req);
+      if (!data.email || !data.email.includes("@")) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Valid email required" })); return; }
+      if (!data.password || data.password.length < 6) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Password must be at least 6 characters" })); return; }
+      const user = muCreate(data.email, data.password, data.display_name || "");
+      if (!user) { res.writeHead(409, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Email already registered" })); return; }
+      const token = muSession(user.id);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "set-cookie": `mu_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`
+      });
+      res.end(JSON.stringify({ token, user }));
+    } catch (e) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: e.message || "Bad request" }));
+    }
+    return;
+  }
+
+  // POST /api/login
+  if (path === "/api/login" && req.method === "POST") {
+    try {
+      const data = await readJSON(req);
+      const user = muVerify(data.email, data.password);
+      if (!user) { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Invalid email or password" })); return; }
+      const token = muSession(user.id);
+      res.writeHead(200, {
+        "content-type": "application/json",
+        "set-cookie": `mu_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`
+      });
+      res.end(JSON.stringify({ token, user }));
+    } catch (e) {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: e.message || "Bad request" }));
+    }
+    return;
+  }
+
+  // GET /api/me
+  if (path === "/api/me") {
+    const token = parseCookies(req)["mu_session"];
+    const user = muGet(token);
+    if (user) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ user })); }
+    else { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Not authenticated" })); }
+    return;
+  }
+
+  // POST /api/logout
+  if (path === "/api/logout" && req.method === "POST") {
+    const token = parseCookies(req)["mu_session"];
+    if (token) muDel(token);
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "set-cookie": "mu_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+    });
+    res.end(JSON.stringify({ status: "ok" }));
+    return;
+  }
+
+  // Catch-all -> WebUI. Gate with multi-user auth.
+  const muToken = parseCookies(req)["mu_session"];
+  const muAuthed = muGet(muToken);
+  const adminAuthed = API_SERVER_KEY ? isAuthorized(req) : false;
+  if (!muAuthed && !adminAuthed) {
+    if (wantsHtml(req)) {
+      redirect(res, "/signin");
+    } else {
+      res.writeHead(401, {
+        "content-type": "application/json",
+        "cache-control": "no-store",
+      });
+      res.end(JSON.stringify({ error: "unauthorized", message: "Login required." }));
+    }
+    return;
+  }
   proxyRequest(req, res, WEBUI_PORT);
+
 });
 
 server.listen(PORT, "0.0.0.0", () => {

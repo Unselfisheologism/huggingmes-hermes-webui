@@ -590,8 +590,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <script>
 const SUPABASE_URL = "https://xqhnjbbewoldwtndxfrm.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhxaG5qYmJld29sZHd0bmR4ZnJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwOTY4NDMsImV4cCI6MjA5NjY3Mjg0M30.9WHMU3utNiMGVyHrwYZs5ivGDT29SN8XFtQ5oSU76Lw";
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// All helper functions defined FIRST — available even if CDN is slow
 function switchTab(t){
 document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
 document.getElementById('tab-'+t).classList.add('active');
@@ -628,10 +628,24 @@ else{toast('Account created! Redirecting...');setTimeout(()=>window.location.hre
 }catch(e){toast('Network error. Please try again.');btn.innerHTML='Create Account';btn.disabled=false}
 }
 
+// Init Supabase client (wrapped in try-catch in case CDN is slow)
+let supabase;
+try {
+  supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+} catch(e) {
+  console.warn('Supabase CDN not yet available, deferring...');
+  var cdnScript = document.querySelector('script[src*="supabase"]');
+  if (cdnScript) cdnScript.addEventListener('load', function() {
+    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  });
+}
+
 // Check if already logged in — redirect straight to chat
-supabase.auth.getSession().then(({data:{session}})=>{
-if(session) window.location.href='/';
-});
+if (supabase) {
+  supabase.auth.getSession().then(function({data:{session}}){
+    if(session) window.location.href='/';
+  });
+}
 <\/script>
 </body>
 </html>`;

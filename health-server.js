@@ -390,108 +390,147 @@ function redirect(res, location, statusCode = 302) {
 
 
 /* ── Multi-user auth helpers (parent accounts) ───────────────────── */
-const MU_DB = (process.env.HERMES_HOME || '/opt/data') + '/state/multiuser.json';
-const MU_SESSION_TTL = 30 * 24 * 60 * 60; // 30 days in seconds
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://xqhnjbbewoldwtndxfrm.supabase.co";
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhxaG5qYmJld29sZHd0bmR4ZnJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwOTY4NDMsImV4cCI6MjA5NjY3Mjg0M30.9WHMU3utNiMGVyHrwYZs5ivGDT29SN8XFtQ5oSU76Lw";
 
-function muLoad() {
+/**
+ * Verify a Supabase JWT by calling the Auth REST API.
+ * Returns user object on success, null on failure.
+ * @param {string} token - The access_token JWT
+ * @returns {Promise<object|null>}
+ */
+async function verifySupabaseToken(token) {
+  if (!token) return null;
   try {
-    if (fs.existsSync(MU_DB))
-      return JSON.parse(fs.readFileSync(MU_DB, 'utf8'));
-  } catch {}
-  return { users: [], sessions: {} };
-}
-
-function muSave(d) {
-  try {
-    const dir = require('path').dirname(MU_DB);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(MU_DB, JSON.stringify(d, null, 2), 'utf8');
-  } catch (e) { console.error('mu-db:', e.message); }
-}
-
-async function readJSON(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on('data', c => chunks.push(c));
-    req.on('end', () => {
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString())); }
-      catch { reject(new Error('Invalid JSON')); }
+    const url = `${SUPABASE_URL}/auth/v1/user`;
+    const res = await fetch(url, {
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "apikey": SUPABASE_ANON_KEY
+      }
     });
-    req.on('error', reject);
-  });
-}
-
-function muGet(tok) {
-  if (!tok) return null;
-  const db = muLoad();
-  const sid = db.sessions[tok];
-  if (!sid) return null;
-  const user = db.users.find(u => u.id === sid);
-  if (!user) return null;
-  const now = Date.now() / 1000;
-  if (now > user.sessionExpiresAt) {
-    delete db.sessions[tok];
-    muSave(db);
+    if (!res.ok) return null;
+    const user = await res.json();
+    return user;
+  } catch (e) {
+    console.error("supabase-verify:", e.message);
     return null;
   }
-  return user;
 }
 
-function muCreate(email, password, display_name) {
-  const db = muLoad();
-  if (db.users.find(u => u.email === email)) return null;
-  const crypto = require('crypto');
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
-  const user = {
-    id: 'u_' + crypto.randomBytes(12).toString('hex'),
-    email,
-    password: salt + ':' + hash,
-    display_name: display_name || email.split('@')[0],
-    created_at: new Date().toISOString(),
-    sessionExpiresAt: 0,
-  };
-  db.users.push(user);
-  muSave(db);
-  const { password: _, ...safe } = user;
-  return safe;
+/**
+ * Parse Authorization header and extract Bearer token.
+ */
+function extractBearerToken(req) {
+  const auth = req.headers["authorization"];
+  if (auth && auth.startsWith("Bearer ")) return auth.slice(7);
+  return null;
 }
-
-function muVerify(email, password) {
-  const db = muLoad();
-  const user = db.users.find(u => u.email === email);
-  if (!user) return null;
-  const [salt, storedHash] = user.password.split(':');
-  const hash = require('crypto').scryptSync(password || '', salt, 64).toString('hex');
-  if (hash !== storedHash) return null;
-  const { password: _, ...safe } = user;
-  return safe;
-}
-
-function muSession(userId) {
-  const db = muLoad();
-  const token = require('crypto').randomBytes(24).toString('hex');
-  db.sessions[token] = userId;
-  const user = db.users.find(u => u.id === userId);
-  if (user) user.sessionExpiresAt = (Date.now() / 1000) + MU_SESSION_TTL;
-  muSave(db);
-  return token;
-}
-
-function muDel(tok) {
-  if (!tok) return;
-  const db = muLoad();
-  delete db.sessions[tok];
-  muSave(db);
-}
-
-// ── Signin/signup HTML page ──────────────────────────────────────── */
-const MU_LOGIN_HTML = `<!DOCTYPE html>
+const AI_TUTOR_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AI Tutor</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.1/dist/umd/supabase.min.js"><\/script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f0c29;--card:#1a1740;--surface:#242052;--text:#e8e6f0;--text-muted:#9490b8;--accent:#7c6cf0;--accent-hover:#9488f5;--accent-bg:rgba(124,108,240,.15);--border:rgba(255,255,255,.08);--radius:12px;--shadow:0 4px 24px rgba(0,0,0,.3)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center}
+.chat-app{width:100%;max-width:800px;height:100vh;display:flex;flex-direction:column;background:var(--card);box-shadow:var(--shadow)}
+@media(min-width:640px){.chat-app{max-height:900px;border-radius:var(--radius);margin:20px;height:calc(100vh - 40px)}}
+.chat-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.chat-header h1{font-size:18px;font-weight:700;background:linear-gradient(135deg,#7c6cf0,#b8aaff);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.chat-header .actions{display:flex;gap:8px}
+.chat-header button{background:var(--surface);border:none;color:var(--text);padding:6px 14px;border-radius:8px;cursor:pointer;font-size:13px;transition:all .2s}
+.chat-header button:hover{background:var(--accent-bg);color:var(--accent)}
+.messages{flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:12px;scroll-behavior:smooth}
+.messages::-webkit-scrollbar{width:4px}
+.messages::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+.msg{max-width:92%;padding:12px 16px;border-radius:var(--radius);font-size:15px;line-height:1.6;animation:fadeIn .3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.msg.user{background:var(--accent);align-self:flex-end;border-bottom-right-radius:4px;word-break:break-word}
+.msg.assistant{background:var(--surface);align-self:flex-start;border-bottom-left-radius:4px;word-break:break-word}
+.msg.assistant p{margin-bottom:8px}.msg.assistant p:last-child{margin-bottom:0}
+.msg.assistant strong{color:var(--accent)}
+.msg.assistant code{background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px;font-size:13px;font-family:'Cascadia Code','Fira Code',monospace}
+.msg.assistant pre{background:rgba(0,0,0,.4);padding:12px;border-radius:8px;overflow-x:auto;margin:8px 0;font-size:13px}
+.msg.assistant .svg-container{background:var(--card);border-radius:8px;padding:12px;margin:8px 0;text-align:center;overflow:hidden}
+.msg.assistant .svg-container svg{max-width:100%;height:auto;border-radius:4px}
+.msg.assistant ul,.msg.assistant ol{padding-left:20px;margin:8px 0}
+.typing{padding:12px 16px;background:var(--surface);border-radius:var(--radius);align-self:flex-start;font-size:14px;color:var(--text-muted);animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:.5}50%{opacity:1}}
+.input-area{border-top:1px solid var(--border);padding:10px 14px;display:flex;gap:8px;align-items:flex-end;flex-shrink:0}
+.input-area textarea{flex:1;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px 14px;color:var(--text);font-size:15px;font-family:inherit;resize:none;min-height:44px;max-height:120px;outline:none;transition:border .2s}
+.input-area textarea:focus{border-color:var(--accent)}
+.input-area textarea::placeholder{color:var(--text-muted)}
+.input-area button{background:var(--accent);border:none;color:#fff;width:44px;height:44px;border-radius:8px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
+.input-area button:hover{background:var(--accent-hover)}
+.input-area button:disabled{opacity:.4;cursor:not-allowed}
+.input-area button svg{width:20px;height:20px}
+.toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#d32f2f;color:#fff;padding:10px 20px;border-radius:8px;font-size:14px;z-index:1000;display:none}
+.welcome{padding:40px 20px;text-align:center;color:var(--text-muted);flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.welcome h2{font-size:22px;color:var(--text)}.welcome p{font-size:14px;max-width:400px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="chat-app">
+<div class="chat-header">
+<h1>AI Tutor</h1>
+<div class="actions">
+<button onclick="newChat()" title="New chat">&#x2795;</button>
+<button onclick="logout()" title="Sign out">&#x2192;</button>
+</div>
+</div>
+<div class="messages" id="messages">
+<div class="welcome" id="welcome"><h2>Your AI Tutor</h2><p>Ask any question about your studies. I explain concepts with clear examples, diagrams, and step-by-step guidance.</p><p style="font-size:12px;color:var(--text-muted)">Try: "Explain Pythagoras theorem" or "Solve x² + 5x + 6 = 0"</p></div>
+</div>
+<div class="input-area">
+<textarea id="input" rows="1" placeholder="Ask anything..." onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"><\/textarea>
+<button id="sendBtn" onclick="send()" disabled>
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4z"/><\/svg>
+<\/button>
+</div>
+</div>
+<div class="toast" id="toast"><\/div>
+<script>
+const SUPABASE_URL="{SUPABASE_URL}",SUPABASE_ANON_KEY="{SUPABASE_ANON_KEY}";
+const supabase=window.supabase.createClient(SUPABASE_URL,SUPABASE_ANON_KEY,{{auth:{{persistSession:true,autoRefreshToken:true,storageKey:'ai-tutor-auth'}}}});
+const STORAGE_KEY='ai_tutor_conv';let convId=null,loading=false;
+function toast(m){{const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',4000)}}
+function loadC(){{try{{return JSON.parse(localStorage.getItem(STORAGE_KEY)||'{{}}')}}catch{{return{{}}}}}}
+function saveC(c){{localStorage.setItem(STORAGE_KEY,JSON.stringify(c))}}
+function renderMD(t){{let h=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+h=h.replace(/<pre><code>svg\n?([\s\S]*?)<\/code><\/pre>/gi,(m,s)=>{{const d=s.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');return '<div class="svg-container">'+d+'<\/div>'}})
+h=h.replace(/<pre><code>\w*\n?([\s\S]*?)<\/code><\/pre>/gi,'<pre><code>$1<\/code><\/pre>').replace(/<code>([^<]+)<\/code>/g,'<code>$1<\/code>')
+h=h.replace(/\*\*(.*?)\*\*/g,'<strong>$1<\/strong>').replace(/\*(.*?)\*/g,'<em>$1<\/em>').replace(/\n/g,'<br>')
+h=h.replace(/(<br>){{2,}}/g,'<\/p><p>');if(!h.startsWith('<'))h='<p>'+h+'<\/p>';return h}}
+async function send(){{const i=document.getElementById('input'),b=document.getElementById('sendBtn'),t=i.value.trim();if(!t||loading)return;i.value='';i.style.height='auto'
+const {{data:{{session}}}}=await supabase.auth.getSession();if(!session){{window.location.href='/signin';return}}
+let c=loadC();if(!convId||!c[convId]){{convId='c_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);c[convId]={{id:convId,title:t.slice(0,50),messages:[],createdAt:new Date().toISOString()}}}}
+c[convId].messages.push({{role:'user',content:t}});saveC(c)
+const m=document.getElementById('messages');m.insertAdjacentHTML('beforeend','<div class="msg user"><p>'+t.replace(/</g,'&lt;')+'<\/p><\/div>')
+const wel=document.getElementById('welcome');if(wel)wel.style.display='none'
+loading=true;b.disabled=true;const te=document.createElement('div');te.className='typing';te.id='typing';te.textContent='Thinking...';m.appendChild(te);m.scrollTop=m.scrollHeight
+try{{const msgs=c[convId].messages.map(m=>({{role:m.role,content:m.content}}));const r=await fetch('/api/chat',{{method:'POST',headers:{{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token}},body:JSON.stringify({{messages:msgs}})}});const e=document.getElementById('typing');if(e)e.remove()
+if(!r.ok){{const d=await r.json().catch(()=>({{error:'Request failed'}}));m.insertAdjacentHTML('beforeend','<div class="msg assistant"><p>Error: '+d.error+'<\/p><\/div>');c[convId].messages.push({{role:'assistant',content:'Error: '+d.error}})}}
+else{{const d=await r.json(),reply=d.choices?.[0]?.message?.content||'No response';m.insertAdjacentHTML('beforeend','<div class="msg assistant">'+renderMD(reply)+'<\/div>');c[convId].messages.push({{role:'assistant',content:reply}})}}
+saveC(c);m.scrollTop=m.scrollHeight}}catch(e){{const tel=document.getElementById('typing');if(tel)tel.remove();toast('Network error')}}finally{{loading=false;b.disabled=false;i.focus()}}}}
+function newChat(){{convId=null;document.getElementById('messages').innerHTML='<div class="welcome" id="welcome"><h2>Your AI Tutor<\/h2><p>Ask any question about your studies. I explain concepts with clear examples, diagrams, and step-by-step guidance.<\/p><p style="font-size:12px;color:var(--text-muted)">Try: "Explain Pythagoras theorem" or "Solve x² + 5x + 6 = 0"<\/p><\/div>';document.getElementById('input').value='';document.getElementById('input').focus()}}
+async function logout(){{await supabase.auth.signOut();window.location.href='/signin'}}
+const ta=document.getElementById('input');ta.addEventListener('input',()=>{{ta.style.height='auto';ta.style.height=Math.min(ta.scrollHeight,120)+'px';document.getElementById('sendBtn').disabled=!ta.value.trim()||loading}})
+// Check auth on load
+supabase.auth.getSession().then(({{data:{{session}}}})=>{{if(!session)window.location.href='/signin'}})
+ta.focus();
+<\/script>
+</body>
+</html>`;const SIGNIN_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>AI Tutor — Sign In</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.1/dist/umd/supabase.min.js"><\/script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,#0f0c29,#302b63,#24243e);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
@@ -510,10 +549,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .form button:hover{opacity:.9}
 .form button:disabled{opacity:.5;cursor:not-allowed}
 .error{color:#d32f2f;font-size:13px;margin-top:-10px;margin-bottom:12px;display:none}
-.success{color:#2e7d32;font-size:13px;margin-top:8px;text-align:center;display:none}
 .toast{position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#d32f2f;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;z-index:1000;display:none;animation:fadeIn .3s}
 @keyframes fadeIn{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
-.otp-note{text-align:center;font-size:12px;color:#999;margin-top:12px;line-height:1.4}
+.loader{display:inline-block;width:16px;height:16px;border:2px solid #fff;border-top-color:transparent;border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:6px}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -528,9 +567,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div class="form active" id="form-signin">
 <form onsubmit="return doLogin(event)">
 <label for="email">Email</label>
-<input type="email" id="login-email" placeholder="your@email.com" required>
+<input type="email" id="login-email" placeholder="your@email.com" required autocomplete="email">
 <label for="password">Password</label>
-<input type="password" id="login-pass" placeholder="Enter password" required>
+<input type="password" id="login-pass" placeholder="Enter password" required autocomplete="current-password">
 <button type="submit" id="login-btn">Sign In</button>
 <div class="error" id="login-error"></div>
 </form>
@@ -538,24 +577,62 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 <div class="form" id="form-signup">
 <form onsubmit="return doSignup(event)">
 <label for="name">Your Name</label>
-<input type="text" id="signup-name" placeholder="Parent's name">
+<input type="text" id="signup-name" placeholder="Parent's name" autocomplete="name">
 <label for="email">Email</label>
-<input type="email" id="signup-email" placeholder="your@email.com" required>
+<input type="email" id="signup-email" placeholder="your@email.com" required autocomplete="email">
 <label for="password">Password (min 6 characters)</label>
-<input type="password" id="signup-pass" placeholder="Create a password" required>
+<input type="password" id="signup-pass" placeholder="Create a password" required autocomplete="new-password">
 <button type="submit" id="signup-btn">Create Account</button>
 <div class="error" id="signup-error"></div>
-<div class="success" id="signup-success">Account created! Redirecting...</div>
 </form>
 </div>
-<div class="otp-note">Your data is private and secure.</div>
 </div>
 <script>
-function switchTab(t){document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));document.getElementById('tab-'+t).classList.add('active');document.querySelectorAll('.form').forEach(f=>f.classList.remove('active'));document.getElementById('form-'+t).classList.add('active');document.querySelectorAll('.error').forEach(e=>e.style.display='none')}
+const SUPABASE_URL = "https://xqhnjbbewoldwtndxfrm.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhxaG5qYmJld29sZHd0bmR4ZnJtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwOTY4NDMsImV4cCI6MjA5NjY3Mjg0M30.9WHMU3utNiMGVyHrwYZs5ivGDT29SN8XFtQ5oSU76Lw";
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+function switchTab(t){
+document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+document.getElementById('tab-'+t).classList.add('active');
+document.querySelectorAll('.form').forEach(f=>f.classList.remove('active'));
+document.getElementById('form-'+t).classList.add('active');
+document.querySelectorAll('.error').forEach(e=>e.style.display='none');
+}
+
 function toast(m){const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',4000)}
-async function doLogin(e){e.preventDefault();const btn=document.getElementById('login-btn');btn.disabled=true;btn.textContent='Signing in...';try{const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('login-email').value,password:document.getElementById('login-pass').value})});const d=await r.json();if(r.ok){window.location.href='/'}else{document.getElementById('login-error').textContent=d.error;document.getElementById('login-error').style.display='block'}}catch(e){toast('Network error. Please try again.')}finally{btn.disabled=false;btn.textContent='Sign In'}}
-async function doSignup(e){e.preventDefault();const btn=document.getElementById('signup-btn');btn.disabled=true;btn.textContent='Creating...';try{const r=await fetch('/api/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('signup-email').value,password:document.getElementById('signup-pass').value,display_name:document.getElementById('signup-name').value})});const d=await r.json();if(r.ok){document.getElementById('signup-success').style.display='block';document.getElementById('signup-error').style.display='none';setTimeout(()=>window.location.href='/',1000)}else{document.getElementById('signup-error').textContent=d.error;document.getElementById('signup-error').style.display='block'}}catch(e){toast('Network error. Please try again.')}finally{btn.disabled=false;btn.textContent='Create Account'}}
-</script>
+
+async function doLogin(e){
+e.preventDefault();const btn=document.getElementById('login-btn');btn.disabled=true;btn.innerHTML='<span class="loader"><\/span> Signing in...';
+try{
+const {data,error} = await supabase.auth.signInWithPassword({
+email: document.getElementById('login-email').value,
+password: document.getElementById('login-pass').value
+});
+if(error){document.getElementById('login-error').textContent=error.message;document.getElementById('login-error').style.display='block';btn.innerHTML='Sign In';btn.disabled=false}
+else{window.location.href='/'}
+}catch(e){toast('Network error. Please try again.');btn.innerHTML='Sign In';btn.disabled=false}
+}
+
+async function doSignup(e){
+e.preventDefault();const btn=document.getElementById('signup-btn');btn.disabled=true;btn.innerHTML='<span class="loader"><\/span> Creating...';
+try{
+const name = document.getElementById('signup-name').value || document.getElementById('signup-email').value.split('@')[0];
+const {data,error} = await supabase.auth.signUp({
+email: document.getElementById('signup-email').value,
+password: document.getElementById('signup-pass').value,
+options: { data: { full_name: name } }
+});
+if(error){document.getElementById('signup-error').textContent=error.message;document.getElementById('signup-error').style.display='block';btn.innerHTML='Create Account';btn.disabled=false}
+else{toast('Account created! Redirecting...');setTimeout(()=>window.location.href='/',1500)}
+}catch(e){toast('Network error. Please try again.');btn.innerHTML='Create Account';btn.disabled=false}
+}
+
+// Check if already logged in — redirect straight to chat
+supabase.auth.getSession().then(({data:{session}})=>{
+if(session) window.location.href='/';
+});
+<\/script>
 </body>
 </html>`;
 
@@ -1306,13 +1383,11 @@ except Exception:
   }
 
   // ── Multi-user auth routes (parent accounts) ──────────────────────
-  // GET /signin → login/signup page
+  // GET /signin → Supabase signin/signup page
   if (path === "/signin") {
     if (req.method === "GET") {
-      const token = parseCookies(req)["mu_session"];
-      if (token && muGet(token)) { redirect(res, "/"); return; }
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(MU_LOGIN_HTML);
+      res.end(SIGNIN_HTML);
       return;
     }
     res.writeHead(405, { allow: "GET" });
@@ -1320,71 +1395,79 @@ except Exception:
     return;
   }
 
-  // POST /api/signup
-  if (path === "/api/signup" && req.method === "POST") {
-    try {
-      const data = await readJSON(req);
-      if (!data.email || !data.email.includes("@")) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Valid email required" })); return; }
-      if (!data.password || data.password.length < 6) { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Password must be at least 6 characters" })); return; }
-      const user = muCreate(data.email, data.password, data.display_name || "");
-      if (!user) { res.writeHead(409, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Email already registered" })); return; }
-      const token = muSession(user.id);
-      res.writeHead(200, {
-        "content-type": "application/json",
-        "set-cookie": `mu_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`
-      });
-      res.end(JSON.stringify({ token, user }));
-    } catch (e) {
-      res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: e.message || "Bad request" }));
-    }
-    return;
-  }
+  
 
-  // POST /api/login
-  if (path === "/api/login" && req.method === "POST") {
-    try {
-      const data = await readJSON(req);
-      const user = muVerify(data.email, data.password);
-      if (!user) { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Invalid email or password" })); return; }
-      const token = muSession(user.id);
-      res.writeHead(200, {
-        "content-type": "application/json",
-        "set-cookie": `mu_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`
-      });
-      res.end(JSON.stringify({ token, user }));
-    } catch (e) {
-      res.writeHead(400, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: e.message || "Bad request" }));
-    }
-    return;
-  }
+  
 
-  // GET /api/me
+  // GET /api/me — verify Supabase JWT
   if (path === "/api/me") {
-    const token = parseCookies(req)["mu_session"];
-    const user = muGet(token);
-    if (user) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ user })); }
-    else { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "Not authenticated" })); }
+    const token = extractBearerToken(req);
+    if (!token) { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, authenticated: false })); return; }
+    verifySupabaseToken(token).then(user => {
+      if (user) { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: true, authenticated: true, user: { id: user.id, email: user.email, display_name: user.user_metadata?.full_name || user.email } })); }
+      else { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, authenticated: false })); }
+    }).catch(() => {
+      res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ ok: false, authenticated: false }));
+    });
     return;
   }
 
   // POST /api/logout
   if (path === "/api/logout" && req.method === "POST") {
-    const token = parseCookies(req)["mu_session"];
-    if (token) muDel(token);
-    res.writeHead(200, {
-      "content-type": "application/json",
-      "set-cookie": "mu_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
-    });
+    res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ status: "ok" }));
     return;
   }
 
-  // Catch-all -> WebUI. Gate with multi-user auth.
-  const muToken = parseCookies(req)["mu_session"];
-  const muAuthed = muGet(muToken);
+    // POST /api/chat — proxy to Gateway with JWT verification
+  if (path === "/api/chat" && req.method === "POST") {
+    // Verify Supabase JWT from Authorization header
+    const token = extractBearerToken(req);
+    if (!token) { res.writeHead(401, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "unauthorized" })); return; }
+    
+    let chunks = [];
+    req.on("data", c => chunks.push(c));
+    req.on("end", () => {
+      const data = JSON.parse(Buffer.concat(chunks).toString());
+      const body = JSON.stringify({
+        model: data.model || process.env.MODEL_FOR_CONFIG || process.env.HERMES_MODEL || "default",
+        messages: data.messages || [],
+        stream: false
+      });
+      const opts = {
+        hostname: GATEWAY_HOST,
+        port: GATEWAY_PORT,
+        method: "POST",
+        path: "/v1/chat/completions",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+          "Authorization": "Bearer " + API_SERVER_KEY
+        }
+      };
+      const proxyReq = http.request(opts, (proxyRes) => {
+        res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, "access-control-allow-origin": "*" });
+        proxyRes.pipe(res);
+      });
+      proxyReq.on("error", (e) => { res.writeHead(502, { "content-type": "application/json" }); res.end(JSON.stringify({ error: "gateway_error", message: e.message })); });
+      proxyReq.end(body);
+    });
+    req.on("error", (e) => { res.writeHead(400, { "content-type": "application/json" }); res.end(JSON.stringify({ error: e.message })); });
+    return;
+  }
+
+  // GET /tutor — serve chat interface
+  if (path === "/tutor" || path === "/tutor/") {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(AI_TUTOR_HTML);
+    return;
+  }
+
+    // Catch-all -> serve chat interface or proxy to WebUI for admin
+  const token = extractBearerToken(req);
   const adminAuthed = API_SERVER_KEY ? isAuthorized(req) : false;
+  const muAuthed = token ? await verifySupabaseToken(token) : null;
+  
   if (!muAuthed && !adminAuthed) {
     if (wantsHtml(req)) {
       redirect(res, "/signin");
@@ -1397,6 +1480,15 @@ except Exception:
     }
     return;
   }
+  
+  // mu-authenticated user -> tutor chat interface (per-user isolated)
+  if (muAuthed) {
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.end(AI_TUTOR_HTML);
+    return;
+  }
+  
+  // Admin-authenticated (GATEWAY_TOKEN) -> full Hermes WebUI
   proxyRequest(req, res, WEBUI_PORT);
 
 });
